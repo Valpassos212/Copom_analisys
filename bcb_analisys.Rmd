@@ -1,0 +1,539 @@
+---
+title: "COPOM Minutes Analysis."
+author: "Iven da S. Valpassos"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+My work is in the field of economics and finance and it is amazing how we can extract useful information from almost any type of data using the available technology. But with such a variety of tools at our disposal, what is the best option?
+
+A current discussion among some of my fellow researchers is about "Python vs R", what language is the most complete for data science (in a very borad sense) practitioners? 
+
+Although you can do almost everything sticking with only one option, to my mind (and it is my very humble opinion) the use of the best features of each language can give us better results. 
+
+When it comes to machine learning, I think that sklearn and some other Python tools are better options than those we have in R. R, however, is my choice for data munging, inferential statistics and (some) plots.
+
+Luckyly enough, we  have at our disposal,  for free, tools that make using both languages simultaneously almost a walk in the park, why should we don't do it? 
+
+In this example, we are going to make an analysis of the Brazilian Central Bank Monetary Policy Committee (COPOM) minutes using both Python and R.
+
+1 - We convert COPOM minutes (pdf files) into a corpus;
+
+2 - Word clouds of different periods;
+
+3 -Counting words in each minute;
+
+4- Most common words for each presidency;
+
+5 -Logistic regression to classify minutes as dovish or hawkish;
+
+6- SVM to classify minutes as dovish or hawkish;
+
+7- Conclusions.
+
+
+The package "reticulate" is loaded. It allows us to work with Python and R interchangeably. Also, we install Python packages required for the analysis.
+
+
+
+
+```{r "setup", include=FALSE}
+library(reticulate)
+library(knitr)
+use_python("C:/Users/ivenv/anaconda3/python.exe", required = TRUE)
+knitr::knit_engines$set(python = reticulate::eng_python)
+
+#py_install("wordcloud")
+#py_install("pandas")
+#py_install("NumPy")
+#py_install("")
+#py_install("PyQt5")
+```
+
+
+Now, we load all R packages needed to perform our analysis.
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tm)
+library(pdftools)
+library(qdap)
+library(RWeka)
+library(wordcloud)
+library(e1071)
+library(readxl)
+library(tidyverse)
+library(data.table)
+library(tidytext)
+library(lubridate)
+library(scales)
+
+```
+
+ The minutes are transformed into a VCorpus.
+
+```{r}
+
+setwd("C:/atas_bcb")
+
+directory<- c("C:/atas_bcb/texts")
+
+copom_corpus <- VCorpus(DirSource(directory), 
+                        readerControl = list(reader = readPDF, language = "English"))
+
+
+```
+
+Now we have a corpus and we can start cleaning our data. The process involves changing words capitalization, removing punctuation, change number for text format and removing words that don't aggregate information (stop wors).
+
+```{r}
+
+copom_corpus<- tm_map(copom_corpus, content_transformer(tolower))
+
+copom_corpus<- tm_map(copom_corpus,
+                      content_transformer(removePunctuation))
+
+copom_corpus<- tm_map(copom_corpus, content_transformer(removeNumbers))
+
+copom_corpus<- tm_map(copom_corpus, stripWhitespace)
+
+custom_stop_words<- c("committee","jan", "january","feb","february","mar","march","apr","april","may","jun","june", "jul","pp",                      "july","aug","august","sep","september", "oct","october","nov","november","dec", "december","bps","basis","month","months","bank","central", "brasil", "brazil","index","month","year","yearly","compared","banco", "central","information","fourweek","gerinbcbgovbr","gcibacenbcbgovbr","gerin","fourweek","question",
+                      "questions","due",
+                      "disclosure", "billion", "million","intended", "intention", "copom",                      "communicate","bcbgovbr","bind","according", "gcibacenbcbgovbr", "meet", "meeting","th","comments","_head","quarter","ended","members","ended","discussed","focus survey","actions bcbgovbr","relevant horizons","deputy","governor","-head","gcibacenbcbgovbr", "yearoveryear","monthtomonth","head","-head","baseline","conduct","-","fabio","kanczuk","fernanda","bruno","joao","manoel","carolina","fernandes", "de","campos","neto","feitosa","mello", "maurício","nechio", "inflation","increase","increased", "brazilian","department","prices","price", "twelve","monetary","policy","monthonmonth","occurs", "occurrence","percent")
+
+
+stop_words<- c(custom_stop_words,stopwords("en"))
+
+copom_corpus<- tm_map(copom_corpus, removeWords, stop_words)
+
+
+```
+
+You may wonder how do I reach to the conclusion about which words should be removed in addition to the standard stop words. Well, I am saving you some time as I have already messed around with this data dozens of times, but feel free to include or exclude some tokens.
+
+Moving to the next step, we extract each word or combination of words present in the minutes. I choose tokens of 1 word and combinations of 2 words. In addition, I have made some changes to column names, removing ".pdf" from them and converting the column names from text to numbers.
+
+The matrix we built is a TermDocumentmatrix (TDM). The absolute frequency of the words is wheighted by the inverse of the number of documents the word occurs (TfIdf). 
+
+```{r}
+
+#function to tell how we extract tokens from text. In this case, tokens of 1 word and 2 words.
+
+tokenizer<- function(x){
+  
+  NGramTokenizer(x, Weka_control(min = 1, max = 2))
+}
+
+copom_tdm_weighted<- TermDocumentMatrix(copom_corpus, control = (list(weighting = weightTfIdf,tokenize = tokenizer))) #creates a TDM
+
+copom_tdm_matrix_weighted<- as.matrix(copom_tdm_weighted)
+
+new_names<- str_remove_all(colnames(copom_tdm_matrix_weighted),".pdf")
+
+new_names<- as.numeric(new_names)
+
+colnames(copom_tdm_matrix_weighted)<- new_names
+
+x<- seq(from = 1, to = 165, by= 1)
+
+z<- as.character(x)
+
+y<- copom_tdm_matrix_weighted[,z]
+
+copom_tdm_matrix_weighted<-y
+
+indices<- rownames(copom_tdm_matrix_weighted)#this indexes will be used later
+
+```
+
+Now, things become more exciting, we convert a R matrix into a Python data frame. 
+
+But before we do it, we are loading all Python tools we need.
+
+```{python}
+import pandas as pd
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import SGDClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import confusion_matrix
+from sklearn.model_selection import GridSearchCV
+from sklearn.svm import SVC
+import numpy as np
+```
+
+
+
+```{python}
+
+indexes = list(r.indices) 
+copom_tdm_matrix_weighted_py = pd.DataFrame(r.copom_tdm_matrix_weighted,index=indexes)
+
+```
+
+
+```{python}
+
+print(copom_tdm_matrix_weighted_py.iloc[0:6,0:10])
+
+```
+
+
+```{python}
+
+copom_tdm_matrix_weighted_py['word_freq']= copom_tdm_matrix_weighted_py.sum(skipna=True, axis=1)
+
+freq = copom_tdm_matrix_weighted_py["word_freq"]
+
+freq.sort_values(ascending=False)
+```
+
+```{python  }
+
+w = WordCloud(width=400, height=300, mode='RGBA', background_color="white", max_words=200).fit_words(freq)
+
+
+
+```
+
+Our data comprises COPOM metings from Dec/2001 to Mar/2020. We can see that "exchange policy", "reforms", "administered contracts" are strong terms during the years under analisys.  Also, confirming our status of small open economy "foreign" is also highlighted.
+
+What about COPOM's last meeting? Is there a concern about corona virus? We can check it.
+
+```{r}
+
+copom_df<- data.frame(copom_tdm_matrix_weighted, check.names = FALSE)
+
+corona_copom<- copom_df%>%select("165")
+
+colnames(corona_copom)<- c("freq")
+
+```
+
+```{python echo=TRUE}
+
+corona_py = pd.DataFrame(r.corona_copom)
+
+w_corona = WordCloud(width=1000, height=800, mode='RGBA',
+background_color="black", max_words=100).fit_words(corona_py["freq"])
+
+
+
+```
+Well, the image is sel explanatory.
+
+
+
+```{r}
+
+counter<- colSums(copom_tdm_matrix_weighted!=0)
+
+counter<- data.frame(counter)
+
+extra_info<- read_xlsx("Class.xlsx")
+
+names(extra_info)<- c("COPOM_Minute","Classification_dov_hawk","Date_Meeting","President_CBB")
+
+copom_data<- cbind(counter,extra_info)
+
+copom_data$President_CBB <- as.factor(copom_data$President_CBB)
+
+copom_data$year<- as.Date(copom_data$Date_Meeting)
+
+copom_data$Date_Meeting <- as.character(copom_data$Date_Meeting)
+
+g1<- ggplot(data = copom_data, aes(x = year ,y = counter, fill = President_CBB)) + geom_col()  + scale_x_date(name = "COPOM Minutes ", date_breaks = "2 years",labels = date_format('%Y')) + scale_fill_brewer(palette = "Spectral") + theme(axis.text.x = element_text(angle = 30, face = "italic", size = 10)) + labs( y = "Number of Words",fill = "President") +theme(panel.background = element_blank())
+
+g1
+```
+
+The previous plot depicts the number of words on each COPOM Minute. We during the aftermath of 2008 crisis CBB has a lot to tell and comunicate about its actions. Under Ilan and Campos, CBB comunication became more direct and concise, although we must take into consideration the different global and comestic economic scenario. 
+We are now interested in the most common words under the leadership of each Central Bank of Brasil (CBB) president. I will re-create the database using a different method. It gives us opportunity to revise a new method to create the database and it will make data manipulation easier on a latter stage.
+
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+#creating links
+
+minutes_links<- list()
+
+
+for (i in 1:165) {
+  
+  minutes_links[i] = print(paste("C:/Users/ivenv/OneDrive/Documentos/atas_bcb/texts/",i,".pdf", sep = ""))
+  
+}
+
+minutes_data<- unlist(minutes_links)
+
+```
+
+
+```{r}
+copom_text<- data.frame(presidente=copom_data$Pres,stringsAsFactors = FALSE) %>%
+  
+  mutate(text= map(minutes_data,pdf_text)) %>% unnest(text) %>% 
+  
+  group_by(presidente) %>% mutate(page=row_number()) %>%
+  
+  ungroup() %>%
+  
+  mutate(text=strsplit(text,"\r")) %>% 
+  
+  unnest(text) %>% 
+  
+  mutate(text=gsub("\n","",text)) %>%
+  
+  group_by(presidente) %>% 
+  
+  mutate(line=row_number()) %>% 
+  
+  ungroup() %>% 
+  
+  select(presidente,line,page,text)
+
+```
+
+```{r}
+
+copom_words<- copom_text%>%select(presidente,page,line,text)%>% unnest_tokens(word,text)
+
+copom_words%>%mutate(word = gsub("[^A-Za-z ]","",word)) %>%
+  
+  filter(word!="") %>%
+  
+  filter(!word %in% stop_words) %>%
+  
+  group_by(presidente) %>%
+  
+  count(word, sort = TRUE)%>%
+  
+  mutate(rank = row_number()) %>%
+  
+  ungroup() %>%
+  
+  arrange(rank, presidente) %>%
+  
+  filter(rank < 10) %>%
+  
+  ggplot(aes(y=n, x = fct_reorder(word,n))) +
+  
+  geom_col(fill = "red") + coord_flip() + 
+  
+  facet_wrap(~presidente, scales = "free")  + labs(x = "", y = "", title = "Frequent Words on each President Mandate")
+
+
+```
+
+The minutes of Arminio's period is marked by two terms "exchange" and "rate". Nothing more natural considering that the Argentine crisis and the Lula fear crisis were both reflected in those COPOM Minutes. Tombini's COPOM minutes have "growth" as one of the most frequent words. This is expected as his term coincides with the worst domestic recession in  history. 
+
+Previously,in order to build a wordcloud, we transformed our text data into a Term Document  Matrix. Now, our aim is to predict the "tone" of the minute, that is, we want to know if the central bank is hawkish or dovish. For this purpose, we work with the same data, however, we transpose the matrix. The Document Term Matrix is now what we want.
+
+```{r}
+tokenizer_2<- function(x){
+  
+  NGramTokenizer(x, Weka_control(min = 1, max = 1))
+}
+
+copom_dtm_weighted<- DocumentTermMatrix(copom_corpus, control = (list(weighting = weightTfIdf,tokenize = tokenizer_2)))
+
+copom_dtm_m<- as.matrix(copom_dtm_weighted)
+
+new_row_names<- str_remove_all(row.names(copom_dtm_m),".pdf")
+
+new_row_names<- as.numeric(new_row_names)
+
+rownames(copom_dtm_m)<- new_row_names
+
+x<- seq(from = 1, to = 165, by= 1)
+
+z<- as.character(x)
+
+y<- copom_dtm_m[z,]
+
+copom_dtm_m<-y
+
+copom_dtm_df<- data.frame(copom_dtm_m, check.names = FALSE)
+
+copom_dtm_df[,"Class_dov_hawk"]<- extra_info$Classification_dov_hawk
+
+
+```
+
+As I said before, "sklearn" is my favourite framework when it comes to machine learning. To make good use of it, we are now converting our data to Python format so we can run Logistic Regression and SVM to predict if the COPOM minute is hawkish or dovish. It must rest clear to the reader that this work is merely for learning purposes and there is no academic rigour on it. Our dataset has some drawbacks that make it harder to get to strong conclusions, the main issues are:
+
+1) We have only 165 observations and both algorithms perform poorly with such a short sample;
+
+2) The classification used to train the algorithm was made based on interest rates movements and by reading some of the minutes, but here the researcher bias can be strong.
+
+
+```{python echo=TRUE }
+
+copom_dtm_py = pd.DataFrame(r.copom_dtm_df)
+
+
+```
+
+```{python echo=TRUE}
+
+y = copom_dtm_py.Class_dov_hawk
+
+X = copom_dtm_py.drop('Class_dov_hawk', axis=1)
+
+```
+
+```{python echo=TRUE}
+
+y = copom_dtm_py.Class_dov_hawk
+
+X = copom_dtm_py.drop('Class_dov_hawk', axis=1)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=20)
+
+lr = LogisticRegression()
+
+searcher = GridSearchCV(lr, {"C":[0.001,0.01,0.1,1,10]})
+
+searcher.fit(X_train,y_train)
+
+print("The best parameter value is", searcher.best_params_)
+
+best_lr = searcher.best_estimator_
+coefs = best_lr.coef_
+print("Number of features:", coefs.size)
+print("Selected features:", np.count_nonzero(coefs))
+
+```
+
+
+
+```{python}
+log_reg = LogisticRegression(C=0.001).fit(X_train,y_train)
+
+y_predicted = log_reg.predict(X_test)
+
+print('Train set accuracy: ', log_reg.score(X_train, y_train))
+
+print('Test set accuracy: ', log_reg.score(X_test, y_test))
+
+print('Test set score accuracy: ', accuracy_score(y_test, y_predicted))
+
+print('Confusion matrix: \n', confusion_matrix(y_test, y_predicted)/len(y_test))
+```
+
+Most important words.
+
+```{python}
+inds_ascending = np.argsort(log_reg.coef_.flatten()) 
+inds_descending = inds_ascending[::-1]
+
+words = list(X.columns)
+```
+
+Logistic regression allow us to see the words more related with a hawkish instance of COPOM (positive coeficients) and the words more associated with a dovish instance (negative coeficients).
+
+
+```{python}
+print("Most hawkish words: ", end="")
+for i in range(5):
+    print(words[inds_descending[i]], end=", ")
+print("\n")
+```
+
+```{python}
+print("Most dovish words: ", end="")
+for i in range(5):
+    print(words[inds_ascending[i]], end=", ")
+print("\n")
+```
+
+
+```{python}
+log_reg = LogisticRegression().fit(X, y)
+
+print('Accuracy of logistic regression: ', log_reg.score(X, y))
+
+```
+
+
+
+
+```{python echo=TRUE}
+prob_class = log_reg.predict_proba(X)
+
+print(prob_class)
+```
+
+
+We have seen that logistic regression is useful but due to our small sample the results are not so convincing. It is possible to try other classification algorithm. Doing this way, we can compare results and, more important, learn another approach.
+
+
+```{python}
+
+svm = SVC(probability=True)
+
+parameters = {'gamma':[0.00001, 0.0001, 0.001, 0.01, 0.1]}
+
+sv_best = GridSearchCV(svm,parameters)
+
+sv_best.fit(X,y)
+
+
+print("Best CV params", sv_best.best_params_)
+
+print("Test accuracy of best grid search hypers:", 
+
+sv_best.score(X,y))
+
+sv_best.predict_proba(X)
+
+```
+
+
+It is also possible to directly compare and choose the best classifier, using SGDClassifier. As logistic regression and SVM differ basically on their loss functions, the SGDClassifier chooses the loss function and parameters that gives the best performance.
+
+```{python}
+
+choice = SGDClassifier(random_state=0)
+
+parameters = {'alpha':[0.00001, 0.0001, 0.001, 0.01, 0.1, 1], 
+             'loss':["hinge","log"], 'penalty':["l1","l2"]}
+searcher = GridSearchCV(choice, parameters, cv=10)
+
+searcher.fit(X_train, y_train)
+
+print("Best CV params", searcher.best_params_)
+print("Best CV accuracy", searcher.best_score_)
+print("Test accuracy of best grid search hypers:", searcher.score(X_test, y_test))
+
+
+```
+
+Results: 
+ 
+Best CV params {'alpha': 0.001, 'loss': 'hinge', 'penalty': 'l2'}
+Best CV accuracy 0.5643939393939392
+Test accuracy of best grid search hypers: 0.5
+
+
+
+
+The results point out that SVM (hinge loss) with C = 1000 (alpha = 0.001) and l2 regularization is the best option. 
+
+Although there is no clear difference on the accuracy of the two algorithms, the classification probabilities produced by SVM are more useful, as SVM responds better in the case of a small sample (as is our case here) when returning class probabilities. This caracteristic is useful if you are interested in building a dovishness/hawkishness index, for instance.
+
+Maybe, some of the misclassifictions are due to the Central Bank of Brazil lack of credibility in part of the period under analisys. If we control the class probabilities by the credibility level of the CBB we expect to obtain (I still don't know if this is the case) a probability closer to the real classification in our data.
+
+
+
+
+
+
+
+
+
+
+
+
