@@ -7,4 +7,4 @@ Extract them to your working directory.
 
 The file bcb_analisys.docx shows all the steps in detail.
 
-You can find all COPOM statements [here](https://www.bcb.gov.br/en/monetarypolicy/copomstatements).
+You can find all COPOM minutes [here](https://www.bcb.gov.br/en/publications/copomminutes).
